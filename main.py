@@ -2,20 +2,32 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# یک endpoint ساده برای دریافت داده‌ها
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
+
+# یک متغیر ساده برای نگه‌داری آخرین داده دریافتی
+last_data = {}
+
 @app.route("/data", methods=["POST"])
 def receive_data():
-    data = request.json  # داده JSON که از اپلیکیشن می‌آید
-    print("Received data:", data)  # چاپ داده‌ها در لاگ Render
-    return jsonify({"status": "success", "received": data})
+    global last_data
+    last_data = request.json  # ذخیره کردن داده ارسالی
+    print("Received data:", last_data)
+    return jsonify({"status": "success", "received": last_data})
 
-# یک endpoint برای تست دستی در مرورگر
 @app.route("/", methods=["GET"])
 def home():
-    return "Server is running! Use POST /data to send JSON."
+    if last_data:
+        return f"""
+        <h2>آخرین داده دریافتی:</h2>
+        <pre>{last_data}</pre>
+        """
+    else:
+        return "<h3>هنوز هیچ داده‌ای دریافت نشده است.</h3>"
 
 if __name__ == "__main__":
-    # با Render، پورت از محیط می‌آید
     import os
-    port = int(os.environ.get("PORT", 10000))  # اگر PORT ندادند، 10000
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+

@@ -3,10 +3,13 @@ import time
 
 app = Flask(__name__)
 
-# نگهداری داده‌ها بر اساس device_id و code
+# نگهداری آخرین داده هر ESP
+# device_data[device_id][code] = آخرین دیتا برای هر کد
 device_data = {}
+# زمان آخرین آپدیت برای هر کد
 device_timestamp = {}
 
+# تعیین device_id بر اساس code (هر 1000 تا یک device)
 def get_device_id(code):
     try:
         code = int(code)
@@ -16,9 +19,13 @@ def get_device_id(code):
 
 @app.route("/data", methods=["POST"])
 def receive_data():
+    """
+    دریافت داده از ESP
+    دیتا باید شامل فیلد 'code' باشد
+    """
     global device_data, device_timestamp
-
     data = request.json
+
     if not data or "code" not in data:
         return jsonify({"error": "missing 'code' field"}), 400
 
@@ -27,23 +34,46 @@ def receive_data():
     if device_id is None:
         return jsonify({"error": "invalid code"}), 400
 
-    # اگر برای این device_id هنوز دیتایی نیست، بسازیم
+    # ایجاد دیکشنری برای device_id اگر وجود ندارد
     if device_id not in device_data:
         device_data[device_id] = {}
         device_timestamp[device_id] = {}
 
-    # ذخیره آخرین نسخه برای code
+    # ذخیره داده
     device_data[device_id][code] = data
     device_timestamp[device_id][code] = time.time()
 
     print(f"Device {device_id} code {code} updated:", data)
     return jsonify({"status": "success", "device_id": device_id, "code": code})
 
+
 @app.route("/poll", methods=["GET"])
 def poll():
-    device_id = request.args.get("device_id")
+    """
+    GET endpoint:
+    - ESP: ?device_id=0&last=timestamp → long-polling، دریافت همه کدهای رنج
+    - موبایل: ?code=1234 → دریافت آخرین دیتا فقط برای یک کد مشخص
+    """
     last = float(request.args.get("last", 0))
 
+    # حالت موبایل: فقط یک کد مشخص
+    code = request.args.get("code")
+    if code is not None:
+        try:
+            code = int(code)
+        except:
+            return jsonify({"error": "invalid code"}), 400
+        device_id = get_device_id(code)
+        if device_id in device_data and code in device_data[device_id]:
+            return jsonify({
+                "data": device_data[device_id][code],
+                "timestamp": device_timestamp[device_id][code]
+            })
+        else:
+            return jsonify({"status": "no data for this code"}), 404
+
+    # حالت ESP: دریافت همه کدهای رنج
+    device_id = request.args.get("device_id")
     if device_id is None:
         return jsonify({"error": "device_id missing"}), 400
     try:
@@ -53,27 +83,32 @@ def poll():
 
     timeout = 30
     start = time.time()
-
     while time.time() - start < timeout:
-        response_data = {}
-        if device_id in device_data:
-            # فقط داده‌هایی که جدیدتر از last هستند
+        updated_codes = {}
+        if device_id in device_timestamp:
             for code, ts in device_timestamp[device_id].items():
                 if ts > last:
-                    response_data[code] = device_data[device_id][code]
+                    updated_codes[code] = device_data[device_id][code]
 
-        if response_data:
-            # حداکثر timestamp را برای ارسال به ESP نگه می‌داریم
-            max_ts = max(device_timestamp[device_id].values())
-            return jsonify({"data": response_data, "timestamp": max_ts})
+        if updated_codes:
+            # آخرین timestamp از بین همه کدهای جدید
+            latest_ts = max(device_timestamp[device_id][c] for c in updated_codes)
+            return jsonify({"data": updated_codes, "timestamp": latest_ts})
 
         time.sleep(0.5)
 
+    # بدون داده جدید
     return jsonify({"status": "no new data", "timestamp": last})
+
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"devices": device_data, "timestamps": device_timestamp})
+    """نمایش همه ESPها برای دیباگ"""
+    return jsonify({
+        "devices": device_data,
+        "timestamps": device_timestamp
+    })
+
 
 if __name__ == "__main__":
     import os

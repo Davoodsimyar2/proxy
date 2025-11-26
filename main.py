@@ -3,13 +3,13 @@ import time
 
 app = Flask(__name__)
 
-# یک متغیر ساده برای نگه‌داری آخرین داده دریافتی
+# آخرین داده و زمان دریافت
 last_data = {}
-last_update = 0  # زمان آخرین آپدیت
+last_update = 0  # timestamp آخرین داده
 
 @app.route("/data", methods=["POST"])
 def receive_data():
-    """دریافت داده جدید از ESP یا هر کلاینت دیگر"""
+    """دریافت داده جدید از ESP یا کلاینت دیگر"""
     global last_data, last_update
     last_data = request.json
     last_update = time.time()  # ثبت زمان دریافت
@@ -29,22 +29,21 @@ def home():
 
 @app.route("/poll", methods=["GET"])
 def poll():
-    """
-    Long Polling:
-    کلاینت (ESP) درخواست GET می‌زند،
-    سرور تا timeout صبر می‌کند تا داده جدید بیاید.
-    """
+    """Long Polling endpoint"""
     global last_data, last_update
-    timeout = 30  # ثانیه، حداکثر انتظار برای داده جدید
+    timeout = 30  # ثانیه، حداکثر انتظار
     start = time.time()
 
+    # گرفتن آخرین timestamp که ESP دریافت کرده
+    last_received = float(request.args.get("last", 0))
+
     while time.time() - start < timeout:
-        if last_update > start:  # اگر داده جدید بعد از شروع درخواست آمد
-            return jsonify(last_data)
-        time.sleep(0.5)  # جلوگیری از مصرف CPU زیاد
+        if last_update > last_received:  # داده جدید بعد از آخرین دریافت
+            return jsonify({"data": last_data, "timestamp": last_update})
+        time.sleep(0.5)
 
     # هیچ داده جدیدی نیامده
-    return jsonify({"status": "no new data"})
+    return jsonify({"status": "no new data", "timestamp": last_received})
 
 if __name__ == "__main__":
     import os

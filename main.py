@@ -1,83 +1,101 @@
 import asyncio
-import base64
-from aiohttp import web
 import websockets
+import json
+from flask import Flask, request
+import threading
+import os
 
-# نگهداری WebSocket گوشی
-connected_phone = None
+app = Flask(__name__)
 
-async def ws_phone_handler(ws, path):
-    global connected_phone
-    print("[PHONE] گوشی وصل شد")
-    connected_phone = ws
+# آخرین WebSocket گوشی
+phone_ws = None
+
+# برای نگه‌داشتن آخرین اینترنت گوشی
+last_phone_ip = None
+
+
+# ========== وب‌سوکت گوشی ==========
+async def phone_handler(websocket):
+    global phone_ws, last_phone_ip
+    phone_ws = websocket
+    print("PHONE CONNECTED")
+
+    # از گوشی IP بگیریم
+    await websocket.send(json.dumps({"cmd": "get_ip"}))
+
     try:
-        async for message in ws:
-            # پیام‌ها از گوشی (در صورت نیاز می‌توان مدیریت کرد)
-            print("[PHONE] پیام دریافت شد:", message)
-    except Exception as e:
-        print("[PHONE ERROR]", e)
+        async for msg in websocket:
+            data = json.loads(msg)
+
+            if data["cmd"] == "phone_ip":
+                last_phone_ip = data["ip"]
+
+            elif data["cmd"] == "fetch_result":
+                request_id = data["id"]
+                body = data.get("body", "")
+                fetch_waiters[request_id].set_result(body)
+
+    except:
+        print("PHONE DISCONNECTED")
     finally:
-        print("[PHONE] گوشی قطع شد")
-        connected_phone = None
+        phone_ws = None
 
-# صفحه اصلی برای نمایش IP واقعی گوشی
-async def index(request):
-    if connected_phone:
-        try:
-            # درخواست IP از گوشی بخواهیم
-            await connected_phone.send("GET_IP")
-            ip = await connected_phone.recv()
-        except Exception as e:
-            ip = f"خطا: {e}"
-    else:
-        ip = "گوشی وصل نیست"
 
-    html = f"""
+async def ws_server():
+    async with websockets.serve(phone_handler, "0.0.0.0", 8001):
+        await asyncio.Future()
+
+
+# ========== سرور HTTP برای کامپیوتر ==========
+fetch_waiters = {}
+
+@app.route("/")
+def index():
+    connected = "YES" if phone_ws else "NO"
+    ip = last_phone_ip or "Unknown"
+
+    return f"""
     <html>
-        <head><title>Proxy Status</title></head>
-        <body>
-            <h2>وضعیت اتصال اینترنت گوشی</h2>
-            <p>IP اینترنت گوشی: {ip}</p>
-            <p>وضعیت: {"وصل است" if connected_phone else "قطع است"}</p>
-        </body>
+    <body>
+        <h2>Phone Proxy Status</h2>
+        <p>Phone Connected: <b>{connected}</b></p>
+        <p>Phone Internet IP: <b>{ip}</b></p>
+        <p>Use: /fetch?url=https://example.com</p>
+    </body>
     </html>
     """
-    return web.Response(text=html, content_type="text/html")
 
-# مسیر fetch از کامپیوتر، پیام را به گوشی می‌فرستیم و جواب را دریافت می‌کنیم
-async def fetch_url(request):
-    if connected_phone is None:
-        return web.json_response({"error": "گوشی وصل نیست"}, status=400)
+@app.route("/fetch")
+def fetch_url():
+    global phone_ws
 
-    url = request.query.get("url")
+    if not phone_ws:
+        return "Phone not connected!", 503
+
+    url = request.args.get("url")
     if not url:
-        return web.json_response({"error": "پارامتر url موجود نیست"}, status=400)
+        return "Missing url", 400
 
-    try:
-        # به گوشی بفرستیم که URL را باز کند
-        await connected_phone.send(url)
-        content_b64 = await connected_phone.recv()
-        return web.json_response({"body_b64": content_b64})
-    except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
+    # ارسال درخواست به گوشی
+    req_id = os.urandom(4).hex()
+    waiter = asyncio.get_event_loop().create_future()
+    fetch_waiters[req_id] = waiter
 
-async def main():
-    # راه‌اندازی وب
-    app = web.Application()
-    app.router.add_get('/', index)
-    app.router.add_get('/fetch', fetch_url)
+    asyncio.get_event_loop().create_task(
+        phone_ws.send(json.dumps({"cmd": "fetch", "id": req_id, "url": url}))
+    )
 
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(web.getenv("PORT", 10000))
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    print(f"[WEB] Running on port {port}")
+    # منتظر جواب گوشی
+    body = asyncio.get_event_loop().run_until_complete(waiter)
 
-    # WebSocket گوشی روی پورت 8765
-    ws_server = await websockets.serve(ws_phone_handler, "0.0.0.0", 8765)
-    print("[WS] WebSocket for phone running on port 8765")
+    return body
 
-    await site.start()
-    await asyncio.Future()  # نگه داشتن سرور
 
-asyncio.run(main())
+# ========== اجرای همزمان Flask + WebSocket ==========
+def run_flask():
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+
+threading.Thread(target=run_flask).start()
+
+asyncio.get_event_loop().run_until_complete(ws_server())

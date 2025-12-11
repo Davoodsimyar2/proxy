@@ -1,26 +1,55 @@
-# فایل: server.py
+# server.py
 import asyncio
+import os
 import websockets
+import traceback
 
-# گوشی باید به این WebSocket متصل شود
-# و داده‌ها را به اینترنت ارسال کند
+# پورت از Render environment یا 10000
+PORT = int(os.environ.get("PORT", 10000))
 
+# نگه داشتن اتصال گوشی (یا موبایل) برای relay
 connected_phone = None
 
-async def relay(websocket, path):
+async def relay_handler(websocket, path):
     global connected_phone
-    connected_phone = websocket
-    print("Phone connected")
+    print(f"[NEW WS CONNECTION] path={path}")
+
     try:
-        async for message in websocket:
-            # message از کامپیوتر می‌آید
-            if connected_phone:
-                await connected_phone.send(message)
-    except:
-        print("Phone disconnected")
-        connected_phone = None
+        if path == "/phone":  # گوشی به /phone وصل می‌شود
+            connected_phone = websocket
+            print("[PHONE] Connected successfully")
+            async for message in websocket:
+                print(f"[PHONE → SERVER] {len(message)} bytes")
+            print("[PHONE] Disconnected")
+            connected_phone = None
 
-start_server = websockets.serve(relay, "0.0.0.0", 8765)
+        elif path == "/browser":  # مرورگر کامپیوتر به /browser وصل می‌شود
+            print("[BROWSER] Connected")
+            if connected_phone is None:
+                print("[WARNING] Phone not connected yet! Data won't be relayed.")
+            async for message in websocket:
+                print(f"[BROWSER → SERVER] {len(message)} bytes")
+                if connected_phone:
+                    try:
+                        await connected_phone.send(message)
+                        print(f"[SERVER → PHONE] Sent {len(message)} bytes")
+                    except Exception as e:
+                        print("[ERROR] Sending to phone:", e)
+                else:
+                    print("[WARNING] Phone not connected, dropping data.")
+            print("[BROWSER] Disconnected")
+        else:
+            print("[INFO] Unknown path:", path)
+            await websocket.close()
+    except Exception as e:
+        print("[ERROR] Exception in relay_handler:", e)
+        traceback.print_exc()
 
-asyncio.get_event_loop().run_until_complete(start_server)
-asyncio.get_event_loop().run_forever()
+async def main():
+    print(f"[STARTING] WebSocket server on port {PORT}")
+    server = await websockets.serve(relay_handler, "0.0.0.0", PORT)
+    print("[READY] Server is running...")
+    await server.wait_closed()
+
+if __name__ == "__main__":
+    asyncio.run(main())

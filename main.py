@@ -5,7 +5,7 @@ import base64
 import json
 from aiohttp import web, WSMsgType
 
-# === مدیریت WebSocket ===
+# ===== مدیریت WebSocket =====
 clients = set()
 phone_connected = False
 phone_ws = None
@@ -15,37 +15,35 @@ async def ws_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
-    clients.add(ws)
-    print("[INFO] Client connected")
-    await ws.send_str(json.dumps({"status":"connected"}))
-
+    print("[INFO] WebSocket client connected")
     async for msg in ws:
         if msg.type == WSMsgType.TEXT:
-            data = msg.json()
-            cmd = data.get("cmd")
-
-            if cmd == "phone_ip":
-                print("[PHONE IP]", data.get("ip"))
-            elif cmd == "fetch_result":
-                rid = data.get("id")
-                body_b64 = base64.b64encode(data.get("body","").encode()).decode()
-                # می‌توانید اینجا به کامپیوتر بفرستید
-            elif cmd == "register_phone":
-                phone_connected = True
-                phone_ws = ws
-                print("[INFO] Phone connected")
+            try:
+                data = json.loads(msg.data)
+                cmd = data.get("cmd")
+                if cmd == "register_phone":
+                    phone_connected = True
+                    phone_ws = ws
+                    print("[INFO] Phone registered")
+                elif cmd == "phone_ip":
+                    print("[PHONE IP]", data.get("ip"))
+                elif cmd == "fetch_result":
+                    rid = data.get("id")
+                    body_b64 = base64.b64encode(data.get("body","").encode()).decode()
+                    # می‌توانید اینجا به کامپیوتر بفرستید
+            except Exception as e:
+                print("[WS ERROR]", e)
         elif msg.type == WSMsgType.ERROR:
-            print(f"[WS ERROR] {ws.exception()}")
+            print("[WS ERROR]", ws.exception())
 
-    clients.remove(ws)
-    print("[INFO] Client disconnected")
+    print("[INFO] WebSocket client disconnected")
     if ws == phone_ws:
         phone_connected = False
         phone_ws = None
         print("[INFO] Phone disconnected")
     return ws
 
-# === صفحه وب تست اتصال ===
+# ===== صفحه وب برای تست اتصال گوشی =====
 async def index(request):
     ip_status = "connected" if phone_connected else "not connected"
     html = f"""
@@ -59,10 +57,10 @@ async def index(request):
     """
     return web.Response(text=html, content_type='text/html')
 
-# === راه اندازی وب سرویس ===
+# ===== راه اندازی اپ =====
 app = web.Application()
-app.router.add_get('/', index)
-app.router.add_get('/ws', ws_handler)
+app.router.add_get('/', index)   # صفحه وب مرورگر
+app.router.add_get('/ws', ws_handler)  # WebSocket برای گوشی
 
 port = int(os.environ.get("PORT", 10000))
 web.run_app(app, host="0.0.0.0", port=port)

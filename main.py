@@ -1,55 +1,41 @@
-# server.py
-import asyncio
+from flask import Flask, request, jsonify
+import requests
 import os
-import websockets
-import traceback
 
-# پورت از Render environment یا 10000
-PORT = int(os.environ.get("PORT", 10000))
+app = Flask(__name__)
 
-# نگه داشتن اتصال گوشی (یا موبایل) برای relay
-connected_phone = None
+@app.route('/')
+def index():
+    # نمایش IP سرور برای تست اینکه اینترنت کار می‌کند
+    ip = requests.get("https://api.ipify.org").text
+    html = f"""
+    <html>
+        <head><title>Proxy Status</title></head>
+        <body>
+            <h2>Render Server Proxy Status</h2>
+            <p>Your public IP (via server): {ip}</p>
+            <p>Server can reach the internet: {'Yes' if ip else 'No'}</p>
+        </body>
+    </html>
+    """
+    return html
 
-async def relay_handler(websocket, path):
-    global connected_phone
-    print(f"[NEW WS CONNECTION] path={path}")
-
+@app.route('/fetch')
+def fetch_url():
+    # دریافت url از کامپیوتر
+    url = request.args.get('url')
+    if not url:
+        return jsonify({"error": "url parameter missing"}), 400
     try:
-        if path == "/phone":  # گوشی به /phone وصل می‌شود
-            connected_phone = websocket
-            print("[PHONE] Connected successfully")
-            async for message in websocket:
-                print(f"[PHONE → SERVER] {len(message)} bytes")
-            print("[PHONE] Disconnected")
-            connected_phone = None
-
-        elif path == "/browser":  # مرورگر کامپیوتر به /browser وصل می‌شود
-            print("[BROWSER] Connected")
-            if connected_phone is None:
-                print("[WARNING] Phone not connected yet! Data won't be relayed.")
-            async for message in websocket:
-                print(f"[BROWSER → SERVER] {len(message)} bytes")
-                if connected_phone:
-                    try:
-                        await connected_phone.send(message)
-                        print(f"[SERVER → PHONE] Sent {len(message)} bytes")
-                    except Exception as e:
-                        print("[ERROR] Sending to phone:", e)
-                else:
-                    print("[WARNING] Phone not connected, dropping data.")
-            print("[BROWSER] Disconnected")
-        else:
-            print("[INFO] Unknown path:", path)
-            await websocket.close()
+        r = requests.get(url, timeout=15)
+        return jsonify({
+            "status_code": r.status_code,
+            "headers": dict(r.headers),
+            "body_b64": r.content.encode("base64").decode("utf-8") if r.content else ""
+        })
     except Exception as e:
-        print("[ERROR] Exception in relay_handler:", e)
-        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
-async def main():
-    print(f"[STARTING] WebSocket server on port {PORT}")
-    server = await websockets.serve(relay_handler, "0.0.0.0", PORT)
-    print("[READY] Server is running...")
-    await server.wait_closed()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)

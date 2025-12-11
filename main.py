@@ -1,116 +1,34 @@
-from flask import Flask, request, jsonify
-import time
+import base64
+import aiohttp
+from aiohttp import web
 
-app = Flask(__name__)
+async def fetch_handler(request):
+    url = request.query.get("url")
+    if not url:
+        return web.json_response({"error": "missing url"}, status=400)
 
-# نگهداری آخرین داده هر ESP
-# device_data[device_id][code] = آخرین دیتا برای هر کد
-device_data = {}
-# زمان آخرین آپدیت برای هر کد
-device_timestamp = {}
-
-# تعیین device_id بر اساس code (هر 1000 تا یک device)
-def get_device_id(code):
     try:
-        code = int(code)
-        return code // 1000
-    except:
-        return None
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                body = await resp.read()
+                return web.json_response({
+                    "status": resp.status,
+                    "headers": dict(resp.headers),
+                    "body_b64": base64.b64encode(body).decode()
+                })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
 
-@app.route("/data", methods=["POST"])
-def receive_data():
-    """
-    دریافت داده از ESP
-    دیتا باید شامل فیلد 'code' باشد
-    """
-    global device_data, device_timestamp
-    data = request.json
+async def index(request):
+    return web.Response(text="Python Render Proxy is running.\nUse /fetch?url=<...>")
 
-    if not data or "code" not in data:
-        return jsonify({"error": "missing 'code' field"}), 400
-
-    code = int(data["code"])
-    device_id = get_device_id(code)
-    if device_id is None:
-        return jsonify({"error": "invalid code"}), 400
-
-    # ایجاد دیکشنری برای device_id اگر وجود ندارد
-    if device_id not in device_data:
-        device_data[device_id] = {}
-        device_timestamp[device_id] = {}
-
-    # ذخیره داده
-    device_data[device_id][code] = data
-    device_timestamp[device_id][code] = time.time()
-
-    print(f"Device {device_id} code {code} updated:", data)
-    return jsonify({"status": "success", "device_id": device_id, "code": code})
-
-
-@app.route("/poll", methods=["GET"])
-def poll():
-    """
-    GET endpoint:
-    - ESP: ?device_id=0&last=timestamp → long-polling، دریافت همه کدهای رنج
-    - موبایل: ?code=1234 → دریافت آخرین دیتا فقط برای یک کد مشخص
-    """
-    last = float(request.args.get("last", 0))
-
-    # حالت موبایل: فقط یک کد مشخص
-    code = request.args.get("code")
-    if code is not None:
-        try:
-            code = int(code)
-        except:
-            return jsonify({"error": "invalid code"}), 400
-        device_id = get_device_id(code)
-        if device_id in device_data and code in device_data[device_id]:
-            return jsonify({
-                "data": device_data[device_id][code],
-                "timestamp": device_timestamp[device_id][code]
-            })
-        else:
-            return jsonify({"status": "no data for this code"}), 404
-
-    # حالت ESP: دریافت همه کدهای رنج
-    device_id = request.args.get("device_id")
-    if device_id is None:
-        return jsonify({"error": "device_id missing"}), 400
-    try:
-        device_id = int(device_id)
-    except:
-        return jsonify({"error": "invalid device_id"}), 400
-
-    timeout = 30
-    start = time.time()
-    while time.time() - start < timeout:
-        updated_codes = {}
-        if device_id in device_timestamp:
-            for code, ts in device_timestamp[device_id].items():
-                if ts > last:
-                    updated_codes[code] = device_data[device_id][code]
-
-        if updated_codes:
-            # آخرین timestamp از بین همه کدهای جدید
-            latest_ts = max(device_timestamp[device_id][c] for c in updated_codes)
-            return jsonify({"data": updated_codes, "timestamp": latest_ts})
-
-        time.sleep(0.5)
-
-    # بدون داده جدید
-    return jsonify({"status": "no new data", "timestamp": last})
-
-
-@app.route("/", methods=["GET"])
-def home():
-    """نمایش همه ESPها برای دیباگ"""
-    return jsonify({
-        "devices": device_data,
-        "timestamps": device_timestamp
-    })
-
+def main():
+    app = web.Application()
+    app.add_routes([
+        web.get('/', index),
+        web.get('/fetch', fetch_handler),
+    ])
+    web.run_app(app, host='0.0.0.0', port=10000)
 
 if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    main()
